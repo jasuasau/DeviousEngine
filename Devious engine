@@ -2,7 +2,7 @@ import tkinter as tk
 import os
 import ctypes
 import sys
-import urllib.request  # Added for downloading
+import urllib.request
 from ctypes import wintypes
 
 def is_admin():
@@ -24,8 +24,8 @@ if sys.platform == "win32":
         sys.exit()
 
 def run():
-    # --- 1. DOWNLOAD THE KERNEL ---
-    # Replace this URL with the direct link to your kernel.img
+    # 1. DOWNLOAD THE KERNEL IMAGE
+    # Replace this with your actual .img link
     kernel_url = "https://example.com/your_kernel.img"
     
     print("Downloading kernel image...")
@@ -37,45 +37,50 @@ def run():
         print(f"Download failed: {e}")
         return
 
-    # --- 2. SETUP THE SYSTEM BRIDGE ---
+    # 2. SETUP THE DLL CONTAINER
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
-    # Define types to prevent memory crashes
+    # 3. DEFINE ARGUMENT TYPES (Crucial to prevent Access Violation)
     dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
+    
     dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
     dll.Kernel32.WriteFile.restype = wintypes.BOOL
 
-    # --- 3. OVERWRITE THE DRIVE ---
-    # Opening PhysicalDrive0 (The Boot Drive)
+    dll.Kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+    dll.Kernel32.DeviceIoControl.restype = wintypes.BOOL
+
+    # 4. OPEN PHYSICAL DRIVE 0
     hDevice = dll.Kernel32.CreateFileW(r'\\.\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
 
     if hDevice != wintypes.HANDLE(-1).value:
-        written = wintypes.DWORD(0)
+        # 5. LOCK AND DISMOUNT (Attempt to bypass Error 5)
+        dwBytesReturned = wintypes.DWORD(0)
+        # FSCTL_LOCK_VOLUME = 0x00090018
+        dll.Kernel32.DeviceIoControl(hDevice, 0x00090018, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
+        # FSCTL_DISMOUNT_VOLUME = 0x00090020
+        dll.Kernel32.DeviceIoControl(hDevice, 0x00090020, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         
-        # We write the downloaded kernel_data instead of the old hex string
-        success = dll.Kernel32.WriteFile(
-            hDevice, 
-            kernel_data, 
-            len(kernel_data), 
-            ctypes.byref(written), 
-            None
-        )
+        print("Volume locked/dismounted. Writing data...")
+
+        # 6. PERFORM THE WRITE
+        written = wintypes.DWORD(0)
+        success = dll.Kernel32.WriteFile(hDevice, kernel_data, len(kernel_data), ctypes.byref(written), None)
         
         if success:
-            print("Successfully replaced Windows bootloader with custom kernel.")
-            print("You can now restart the VirtualBox VM.")
+            print(f"Success! Wrote {written.value} bytes. Restart the VM to see your kernel.")
         else:
             print(f"Write failed. Error: {ctypes.get_last_error()}")
+            print("Note: If Error 5 persists, disable Windows Defender or attach disk to another VM.")
             
         dll.Kernel32.CloseHandle(hDevice)
     else:
         print(f"Failed to open drive. Error: {ctypes.get_last_error()}")
 
-# UI Setup
+# --- TKINTER UI ---
 root = tk.Tk()
-root.title("BeysonPirate - Kernel Swapper")
+root.title("BeysonPirate")
 root.geometry("240x120")
 root.resizable(False, False)
 root.configure(bg="#f9f9f8")
